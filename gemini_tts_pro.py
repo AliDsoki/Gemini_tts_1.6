@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-🌟 Gemini TTS Pro v1.8 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
+🌟 Gemini TTS Pro v1.10 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
 ================================================================================
 تطبيق استوديو متكامل وتحكم فائق لتوليد الكلام العربي والدولي بدقة عالية
 باستخدام Google Gemini TTS API.
 
-✨ الميزات الحصرية المدمجة في الإصدار v1.8:
+✨ الميزات الحصرية المدمجة في الإصدار v1.10:
 - معالجة تلقائية وحل جذري لأخطاء 400 Developer Instruction لجميع النماذج المخصصة للصوت.
 - إدارة استباقية للمفاتيح والكوتة (Adaptive RPM Pacing + Round-Robin Rotation).
 - طرق تقسيم نص متعددة مدمجة: بالمدة الزمنية (الثواني)، بعد الكلمات، أو بعد الجمل.
@@ -87,7 +87,7 @@ from PyQt6.QtGui import (
 # ═══════════════════════════════════════════════════════════════
 
 APP_NAME = "Gemini TTS Pro"
-APP_VERSION = "1.8"
+APP_VERSION = "1.10"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".gemini_tts_pro"
@@ -98,6 +98,7 @@ KEYS_STATE_FILE = "keys_state.json"
 GLOBAL_KEYS_STATE_FILE = "keys_global_state.json"
 
 CHARS_PER_SECOND = 15
+CONTEXT_CARRY_WORDS = 200
 MAX_CHUNK_CHARS = 4000
 MAX_LOG_LINES = 1000
 DEFAULT_SAMPLE_RATE = 24000
@@ -289,7 +290,7 @@ class BookJob:
 
 @dataclass
 class ProjectConfig:
-    """Stores project-level configuration integrated from v1.8."""
+    """Stores project-level configuration integrated from v1.10."""
     source_file: str = ""
     model_id: str = "gemini-2.5-flash-preview-tts"
     voice: str = "Kore"
@@ -297,12 +298,14 @@ class ProjectConfig:
     lang_hint: str = "ar"
     custom_reading_styles: dict = field(default_factory=dict)
     
-    # Chunking configuration (integrated from v1.8)
+    # Chunking configuration (integrated from v1.10)
     split_method: str = "seconds"       # 'seconds', 'words', 'sentences'
     chunk_duration: int = 60            # seconds target
     chunk_words: int = 150              # words target
     chunk_sentences: int = 10           # sentences target
     context_carry: bool = True
+    context_carry_words: int = 200
+    paragraph_overrun_limit: int = 20
     auto_clean_symbols: bool = True     # clean URLs/symbols automatically
     remove_diacritics: bool = False     # strip tashkeel if preferred
     
@@ -1585,76 +1588,134 @@ class CheckpointManager:
 # ChunkManager — تقسيم وتفكيك النص الذكي (متعدد الطرق)
 # ═══════════════════════════════════════════════════════════════
 
+@dataclass
+class SentenceItem:
+    text: str
+    char_len: int
+    word_count: int
+    is_para_end: bool
+    words_to_para_end: int
+    chars_to_para_end: int
+
 class ChunkManager:
-    """Splits text into naturally paced chunks with smart boundary detection for Arabic."""
+    """Splits text into naturally paced chunks with smart paragraph boundary detection and customizable context carryover for Arabic."""
     SENTENCE_ENDINGS = re.compile(r'[.!?؟…\n]+')
 
     def __init__(self, text: str, split_method: str = "seconds",
                  chunk_duration: int = 60, chunk_words: int = 150, chunk_sentences: int = 10,
-                 context_carry: bool = True, auto_clean: bool = True, remove_diacritics: bool = False):
+                 context_carry: bool = True, auto_clean: bool = True, remove_diacritics: bool = False,
+                 context_carry_words: int = CONTEXT_CARRY_WORDS, paragraph_overrun_limit: int = 20):
         self._text = clean_arabic_text(text, auto_clean=auto_clean, remove_diacritics=remove_diacritics)
         self._split_method = split_method
         self._chunk_duration = chunk_duration
         self._chunk_words = chunk_words
         self._chunk_sentences = chunk_sentences
         self._context_carry = context_carry
+        self._context_carry_words = context_carry_words if context_carry_words >= 50 else CONTEXT_CARRY_WORDS
+        self._paragraph_overrun_limit = max(0, paragraph_overrun_limit)
         self._chunks: List[ChunkInfo] = []
         self._split()
 
+    def _get_last_n_words(self, text: str) -> str:
+        """Helper function: extracts the last n words (customizable, default ~200 words) from a chunk text to serve as context carryover."""
+        if not text or not text.strip():
+            return ""
+        words = text.strip().split()
+        n = self._context_carry_words
+        last_words = words[-n:] if len(words) >= n else words
+        return " ".join(last_words)
+
     def _split_sentences(self, text: str) -> List[str]:
         parts = self.SENTENCE_ENDINGS.split(text)
-        separators = self.SENTENCE_ENDINGS.findall(text)
+        matches = self.SENTENCE_ENDINGS.findall(text)
         sentences = []
         for i, part in enumerate(parts):
-            s = part.strip()
-            if not s:
+            p = part.strip()
+            if not p:
                 continue
-            if i < len(separators):
-                s += separators[i].strip()
-            sentences.append(s)
+            ending = matches[i] if i < len(matches) else ""
+            sentences.append(f"{p}{ending}")
         return sentences
 
+    def _precompute_sentence_items(self) -> List[SentenceItem]:
+        if not self._text:
+            return []
+        paragraphs = re.split(r'\n\s*\n+', self._text.strip())
+        items = []
+        for para in paragraphs:
+            p = para.strip()
+            if not p:
+                continue
+            sents = self._split_sentences(p)
+            if not sents:
+                continue
+            para_items = []
+            for i, s in enumerate(sents):
+                stext = s.strip()
+                if not stext:
+                    continue
+                wcount = len(stext.split())
+                clen = len(stext)
+                is_end = (i == len(sents) - 1)
+                para_items.append({
+                    "text": stext,
+                    "char_len": clen,
+                    "word_count": wcount,
+                    "is_para_end": is_end
+                })
+            n = len(para_items)
+            for idx in range(n):
+                cur = para_items[idx]
+                rem_w = sum(x["word_count"] for x in para_items[idx + 1:])
+                rem_c = sum(x["char_len"] + 1 for x in para_items[idx + 1:])
+                items.append(SentenceItem(
+                    text=cur["text"],
+                    char_len=cur["char_len"],
+                    word_count=cur["word_count"],
+                    is_para_end=cur["is_para_end"],
+                    words_to_para_end=rem_w,
+                    chars_to_para_end=rem_c
+                ))
+        return items
+
     def _split(self) -> None:
-        sentences = self._split_sentences(self._text)
-        if not sentences:
-            if self._text.strip():
-                self._chunks = [ChunkInfo(
-                    index=0, text=self._text.strip(),
-                    char_count=len(self._text.strip()),
-                    estimated_duration=len(self._text.strip()) / CHARS_PER_SECOND)]
+        items = self._precompute_sentence_items()
+        if not items:
             return
 
         chunks = []
         current_sentences = []
         current_char_len = 0
         current_word_len = 0
-        prev_last_two = []
+        prev_context_str = ""
 
         target_chars = min(self._chunk_duration * CHARS_PER_SECOND, MAX_CHUNK_CHARS)
 
-        for sentence in sentences:
-            sentence_len = len(sentence)
-            sentence_words = len(sentence.split())
-            
-            if sentence_len > MAX_CHUNK_CHARS:
+        for item in items:
+            if item.char_len > MAX_CHUNK_CHARS:
                 if current_sentences:
                     chunk_text = " ".join(current_sentences)
-                    prev_last_two = current_sentences[-2:] if len(current_sentences) >= 2 else list(current_sentences)
+                    context_hint = prev_context_str if self._context_carry and prev_context_str and chunks else ""
                     chunks.append(ChunkInfo(index=len(chunks), text=chunk_text,
                                             char_count=len(chunk_text),
-                                            estimated_duration=len(chunk_text) / CHARS_PER_SECOND))
+                                            estimated_duration=len(chunk_text) / CHARS_PER_SECOND,
+                                            context_hint=context_hint))
+                    prev_context_str = self._get_last_n_words(chunk_text)
                     current_sentences = []
                     current_char_len = 0
                     current_word_len = 0
-                words = sentence.split()
+                words = item.text.split()
                 sub = []
                 sub_len = 0
                 for w in words:
                     if sub_len + len(w) + 1 > MAX_CHUNK_CHARS and sub:
                         chunk_text = " ".join(sub)
+                        context_hint = prev_context_str if self._context_carry and prev_context_str and chunks else ""
                         chunks.append(ChunkInfo(index=len(chunks), text=chunk_text,
                                                 char_count=len(chunk_text),
-                                                estimated_duration=len(chunk_text) / CHARS_PER_SECOND))
+                                                estimated_duration=len(chunk_text) / CHARS_PER_SECOND,
+                                                context_hint=context_hint))
+                        prev_context_str = self._get_last_n_words(chunk_text)
                         sub = []
                         sub_len = 0
                     sub.append(w)
@@ -1670,34 +1731,57 @@ class ChunkManager:
                 if len(current_sentences) + 1 > self._chunk_sentences and current_sentences:
                     should_split = True
             elif self._split_method == "words":
-                if current_word_len + sentence_words > self._chunk_words and current_sentences:
-                    should_split = True
+                if current_word_len + item.word_count > self._chunk_words and current_sentences:
+                    if current_char_len + item.char_len + 1 > MAX_CHUNK_CHARS:
+                        should_split = True
+                    elif item.is_para_end:
+                        current_sentences.append(item.text)
+                        current_char_len += item.char_len + 1
+                        current_word_len += item.word_count
+                        chunk_text = " ".join(current_sentences)
+                        context_hint = prev_context_str if self._context_carry and prev_context_str and chunks else ""
+                        chunks.append(ChunkInfo(index=len(chunks), text=chunk_text,
+                                                char_count=len(chunk_text),
+                                                estimated_duration=len(chunk_text) / CHARS_PER_SECOND,
+                                                context_hint=context_hint))
+                        prev_context_str = self._get_last_n_words(chunk_text)
+                        current_sentences = []
+                        current_char_len = 0
+                        current_word_len = 0
+                        continue
+                    else:
+                        rem_to_para = item.word_count + item.words_to_para_end
+                        rem_chars_to_para = item.char_len + 1 + item.chars_to_para_end
+                        if rem_to_para <= self._paragraph_overrun_limit and (current_char_len + rem_chars_to_para <= MAX_CHUNK_CHARS):
+                            should_split = False
+                        else:
+                            should_split = True
             else:  # seconds
-                if current_char_len + sentence_len + 1 > target_chars and current_sentences:
+                if current_char_len + item.char_len + 1 > target_chars and current_sentences:
                     should_split = True
 
-            if current_char_len + sentence_len + 1 > MAX_CHUNK_CHARS and current_sentences:
+            if current_char_len + item.char_len + 1 > MAX_CHUNK_CHARS and current_sentences:
                 should_split = True
 
             if should_split:
                 chunk_text = " ".join(current_sentences)
-                context_hint = " ".join(prev_last_two) if self._context_carry and prev_last_two and chunks else ""
-                prev_last_two = current_sentences[-2:] if len(current_sentences) >= 2 else list(current_sentences)
+                context_hint = prev_context_str if self._context_carry and prev_context_str and chunks else ""
                 chunks.append(ChunkInfo(index=len(chunks), text=chunk_text,
                                         char_count=len(chunk_text),
                                         estimated_duration=len(chunk_text) / CHARS_PER_SECOND,
                                         context_hint=context_hint))
+                prev_context_str = self._get_last_n_words(chunk_text)
                 current_sentences = []
                 current_char_len = 0
                 current_word_len = 0
 
-            current_sentences.append(sentence)
-            current_char_len += sentence_len + 1
-            current_word_len += sentence_words
+            current_sentences.append(item.text)
+            current_char_len += item.char_len + 1
+            current_word_len += item.word_count
 
         if current_sentences:
             chunk_text = " ".join(current_sentences)
-            context_hint = " ".join(prev_last_two) if self._context_carry and prev_last_two and chunks else ""
+            context_hint = prev_context_str if self._context_carry and prev_context_str and chunks else ""
             chunks.append(ChunkInfo(index=len(chunks), text=chunk_text,
                                     char_count=len(chunk_text),
                                     estimated_duration=len(chunk_text) / CHARS_PER_SECOND,
@@ -1708,15 +1792,8 @@ class ChunkManager:
     def chunks(self) -> List[ChunkInfo]:
         return self._chunks
 
-    @property
-    def total_chunks(self) -> int:
-        return len(self._chunks)
-
 
 # ═══════════════════════════════════════════════════════════════
-# TTSWorkerThread — خيط المعالجة المتزامنة للمقاطع
-# ═══════════════════════════════════════════════════════════════
-
 class TTSWorkerThread(QThread):
     """Processes text chunks concurrently across available API keys using ThreadPoolExecutor."""
     progress = pyqtSignal(int)
@@ -1898,7 +1975,7 @@ class TTSWorkerThread(QThread):
         custom_dict = getattr(self, "_custom_reading_styles", {}) if hasattr(self, "_custom_reading_styles") and self._custom_reading_styles else READING_STYLES
         style_instruction = custom_dict.get(self._reading_style, READING_STYLES.get(self._reading_style, READING_STYLES["رواية (افتراضي)"]))
         if context_hint and context_hint.strip():
-            style_instruction = f"{style_instruction}\n\n[توجيه سياقي عاطفي متصل من المقطع السابق لضبط وتيرة الإلقاء فقط، لا تقرأ هذا النص السابق بصوتك: \"{context_hint.strip()}\"]"
+            style_instruction = f"{style_instruction}\n\n[سياق خلفي من نهاية المقطع السابق (آخر ~{CONTEXT_CARRY_WORDS} كلمة) لضبط الإيقاع والمزاج العاطفي فقط — لا تنطق هذا النص إطلاقًا، فقط استرشد به: \"{context_hint.strip()}\"]"
 
         client = genai.Client(api_key=api_key)
         voice_clean = re.sub(r'[^a-zA-Z]', '', str(self._voice)).strip().lower() or "kore"
@@ -2750,7 +2827,7 @@ def estimate_duration_seconds(char_count: int) -> float:
 # ═══════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
-    """Main application window for Gemini TTS Pro v1.8 Studio."""
+    """Main application window for Gemini TTS Pro v1.10 Studio."""
 
     def __init__(self):
         super().__init__()
@@ -2794,6 +2871,10 @@ class MainWindow(QMainWindow):
                         setattr(self._config, k, v)
                 if not hasattr(self._config, "custom_reading_styles") or not self._config.custom_reading_styles:
                     self._config.custom_reading_styles = READING_STYLES.copy()
+                if not hasattr(self._config, "context_carry_words"):
+                    self._config.context_carry_words = 200
+                if not hasattr(self._config, "paragraph_overrun_limit"):
+                    self._config.paragraph_overrun_limit = 20
             except Exception:
                 pass
 
@@ -2810,6 +2891,9 @@ class MainWindow(QMainWindow):
             self._config.chunk_words = self.chunk_words_spin.value()
             self._config.chunk_sentences = self.chunk_sentences_spin.value()
             self._config.context_carry = self.context_check.isChecked()
+            self._config.context_carry_words = self.context_words_spin.value()
+            if hasattr(self, "overrun_spin"):
+                self._config.paragraph_overrun_limit = self.overrun_spin.value()
             self._config.output_folder = self.output_path_input.text().strip()
             self._config.project_name = self.project_name_input.text().strip()
             self._config.auto_merge = self.auto_merge_check.isChecked()
@@ -3041,6 +3125,16 @@ class MainWindow(QMainWindow):
         self.chunk_words_spin.setSingleStep(20)
         self.chunk_words_spin.valueChanged.connect(self._update_chunk_estimate)
         l_words.addWidget(self.chunk_words_spin)
+        
+        l_words.addWidget(QLabel(" | تجاوز الفقرة:"))
+        self.overrun_spin = QSpinBox()
+        self.overrun_spin.setRange(0, 100)
+        self.overrun_spin.setValue(getattr(self._config, 'paragraph_overrun_limit', 20))
+        self.overrun_spin.setSuffix(" كلمة")
+        self.overrun_spin.setSingleStep(5)
+        self.overrun_spin.valueChanged.connect(lambda: self._save_config())
+        self.overrun_spin.valueChanged.connect(lambda: self._update_chunk_estimate())
+        l_words.addWidget(self.overrun_spin)
         self.stack_chunk_inputs.addWidget(w_words)
 
         w_sent = QWidget()
@@ -3068,9 +3162,23 @@ class MainWindow(QMainWindow):
         self.preview_chunks_btn.setEnabled(False)
         chunk_layout.addWidget(self.preview_chunks_btn)
         
+        context_row = QHBoxLayout()
         self.context_check = QCheckBox(UI["context_carry"])
         self.context_check.setChecked(self._config.context_carry)
-        chunk_layout.addWidget(self.context_check)
+        context_row.addWidget(self.context_check)
+        
+        self.context_words_spin = QSpinBox()
+        self.context_words_spin.setRange(50, 500)
+        self.context_words_spin.setValue(getattr(self._config, 'context_carry_words', 200))
+        self.context_words_spin.setSuffix(" كلمة")
+        self.context_words_spin.setSingleStep(10)
+        self.context_words_spin.setEnabled(self.context_check.isChecked())
+        self.context_check.toggled.connect(self.context_words_spin.setEnabled)
+        self.context_words_spin.valueChanged.connect(lambda: self._save_config())
+        self.context_words_spin.valueChanged.connect(lambda: self._update_chunk_estimate())
+        context_row.addWidget(self.context_words_spin)
+        context_row.addStretch()
+        chunk_layout.addLayout(context_row)
         tab1_layout.addWidget(chunk_group)
         tab1_layout.addStretch()
         tab1_scroll.setWidget(tab1_widget)
@@ -3413,7 +3521,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(settings_action)
 
         help_menu = menubar.addMenu("مساعدة")
-        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.8)", self)
+        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.10)", self)
         welcome_action.triggered.connect(lambda: WelcomeSplashScreen(self, is_standalone=True).exec())
         help_menu.addAction(welcome_action)
         help_menu.addSeparator()
@@ -3695,7 +3803,9 @@ class MainWindow(QMainWindow):
                     chunk_sentences=self.chunk_sentences_spin.value(),
                     context_carry=self.context_check.isChecked(),
                     auto_clean=self._config.auto_clean_symbols,
-                    remove_diacritics=self._config.remove_diacritics
+                    remove_diacritics=self._config.remove_diacritics,
+                    context_carry_words=getattr(self._config, 'context_carry_words', 200),
+                    paragraph_overrun_limit=getattr(self._config, 'paragraph_overrun_limit', 20)
                 )
                 job = BookJob(file_path=p, project_name=clean_name, status="pending",
                               source_text=txt, chunks=mgr.chunks)
@@ -3914,7 +4024,9 @@ class MainWindow(QMainWindow):
             chunk_sentences=self.chunk_sentences_spin.value(),
             context_carry=self.context_check.isChecked(),
             auto_clean=self._config.auto_clean_symbols,
-            remove_diacritics=self._config.remove_diacritics
+            remove_diacritics=self._config.remove_diacritics,
+            context_carry_words=getattr(self._config, 'context_carry_words', 200),
+            paragraph_overrun_limit=getattr(self._config, 'paragraph_overrun_limit', 20)
         )
         self._chunks = mgr.chunks
         
@@ -4684,7 +4796,7 @@ class MainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
-# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.8
+# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.10
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeSplashScreen(QDialog):
@@ -4718,7 +4830,7 @@ class WelcomeSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("Gemini TTS Pro Studio")
         title_lbl.setStyleSheet("font-size: 28px; font-weight: 900; color: #f9e2af; letter-spacing: 1px;")
-        sub_lbl = QLabel("الإصدار الشامل v1.8 — استوديو تحويل النصوص إلى كلام")
+        sub_lbl = QLabel("الإصدار الشامل v1.10 — استوديو تحويل النصوص إلى كلام")
         sub_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #89b4fa;")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -4732,7 +4844,7 @@ class WelcomeSplashScreen(QDialog):
         feat_layout = QVBoxLayout(feat_frame)
         feat_layout.setSpacing(8)
         
-        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.8):")
+        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.10):")
         feat_hdr.setStyleSheet("font-weight: bold; color: #a6e3a1; font-size: 13px;")
         feat_layout.addWidget(feat_hdr)
         
