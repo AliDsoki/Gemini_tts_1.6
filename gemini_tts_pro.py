@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-🌟 Gemini TTS Pro v1.7 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
+🌟 Gemini TTS Pro v1.8 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
 ================================================================================
 تطبيق استوديو متكامل وتحكم فائق لتوليد الكلام العربي والدولي بدقة عالية
 باستخدام Google Gemini TTS API.
 
-✨ الميزات الحصرية المدمجة في الإصدار v1.7:
+✨ الميزات الحصرية المدمجة في الإصدار v1.8:
 - معالجة تلقائية وحل جذري لأخطاء 400 Developer Instruction لجميع النماذج المخصصة للصوت.
 - إدارة استباقية للمفاتيح والكوتة (Adaptive RPM Pacing + Round-Robin Rotation).
 - طرق تقسيم نص متعددة مدمجة: بالمدة الزمنية (الثواني)، بعد الكلمات، أو بعد الجمل.
@@ -87,7 +87,7 @@ from PyQt6.QtGui import (
 # ═══════════════════════════════════════════════════════════════
 
 APP_NAME = "Gemini TTS Pro"
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".gemini_tts_pro"
@@ -289,14 +289,15 @@ class BookJob:
 
 @dataclass
 class ProjectConfig:
-    """Stores project-level configuration integrated from v1.7."""
+    """Stores project-level configuration integrated from v1.8."""
     source_file: str = ""
     model_id: str = "gemini-2.5-flash-preview-tts"
     voice: str = "Kore"
     speed: float = 1.0
     lang_hint: str = "ar"
+    custom_reading_styles: dict = field(default_factory=dict)
     
-    # Chunking configuration (integrated from v1.7)
+    # Chunking configuration (integrated from v1.8)
     split_method: str = "seconds"       # 'seconds', 'words', 'sentences'
     chunk_duration: int = 60            # seconds target
     chunk_words: int = 150              # words target
@@ -381,7 +382,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
                 background-color: #1e1e2e;
                 color: #f8f9fa;
                 font-family: 'Segoe UI', Tahoma, sans-serif;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
             }
             QGroupBox {
@@ -391,7 +392,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
                 margin-top: 1.1em;
                 font-weight: 800;
                 color: #89b4fa;
-                font-size: 14px;
+                font-size: 15px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -401,7 +402,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
             }
             QLabel, QCheckBox, QRadioButton {
                 color: #f8f9fa;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
                 background-color: transparent;
             }
@@ -411,7 +412,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
                 border-radius: 6px;
                 padding: 8px;
                 color: #ffffff;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
                 selection-background-color: #89b4fa;
                 selection-color: #11111b;
@@ -623,7 +624,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
                 background-color: #f8f9fa;
                 color: #212529;
                 font-family: 'Segoe UI', Tahoma, sans-serif;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
             }
             QGroupBox {
@@ -633,7 +634,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
                 margin-top: 1.1em;
                 font-weight: 800;
                 color: #0d6efd;
-                font-size: 14px;
+                font-size: 15px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -643,7 +644,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
             }
             QLabel, QCheckBox, QRadioButton {
                 color: #212529;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
                 background-color: transparent;
             }
@@ -653,7 +654,7 @@ def get_app_stylesheet(dark_theme: bool = True) -> str:
                 border-radius: 6px;
                 padding: 8px;
                 color: #212529;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
                 selection-background-color: #0d6efd;
                 selection-color: #ffffff;
@@ -1733,7 +1734,9 @@ class TTSWorkerThread(QThread):
                  project_name: str, api_keys: List[str], max_workers: int,
                  retry_count: int, reading_style: str = "رواية (افتراضي)",
                  global_key_mgr: Optional[GlobalKeyManager] = None,
-                 adaptive_parallel: bool = True, retry_failed_forever: bool = False):
+                 adaptive_parallel: bool = True, retry_failed_forever: bool = False, custom_reading_styles: Optional[dict] = None):
+        super().__init__()
+        self._custom_reading_styles = custom_reading_styles if custom_reading_styles else READING_STYLES.copy()
         super().__init__()
         self._chunks = chunks
         self._model_id = model_id
@@ -1892,7 +1895,8 @@ class TTSWorkerThread(QThread):
         if not GENAI_AVAILABLE:
             raise ImportError("مكتبة google-genai غير مثبتة في النظام")
 
-        style_instruction = READING_STYLES.get(self._reading_style, READING_STYLES["رواية (افتراضي)"])
+        custom_dict = getattr(self, "_custom_reading_styles", {}) if hasattr(self, "_custom_reading_styles") and self._custom_reading_styles else READING_STYLES
+        style_instruction = custom_dict.get(self._reading_style, READING_STYLES.get(self._reading_style, READING_STYLES["رواية (افتراضي)"]))
         if context_hint and context_hint.strip():
             style_instruction = f"{style_instruction}\n\n[توجيه سياقي عاطفي متصل من المقطع السابق لضبط وتيرة الإلقاء فقط، لا تقرأ هذا النص السابق بصوتك: \"{context_hint.strip()}\"]"
 
@@ -2567,6 +2571,83 @@ class SettingsDialog(QDialog):
         }
 
 
+class StylePromptEditorDialog(QDialog):
+    """محرر وتخصيص موجه النموذج (System Prompt) للأنماط المختلفة (رواية، كتاب، إعلانات، وما إلى ذلك)."""
+
+    def __init__(self, current_style: str, custom_prompts: dict, parent=None):
+        super().__init__(parent)
+        self.current_style = current_style
+        self.custom_prompts = custom_prompts if custom_prompts else READING_STYLES.copy()
+        
+        self.setWindowTitle(f"✏️ تخصيص برمت موجه النموذج للأسلوب: {current_style}")
+        self.setMinimumSize(720, 540)
+        apply_dialog_theme(self, parent._config.dark_theme if hasattr(parent, '_config') else True)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        
+        top_row = QHBoxLayout()
+        top_row.addWidget(QLabel("اختر أو أضف أسلوب الإلقاء (رواية / كتاب / مخصص):"))
+        self.style_selector = QComboBox()
+        self.style_selector.addItems(list(self.custom_prompts.keys()))
+        if current_style in self.custom_prompts:
+            self.style_selector.setCurrentText(current_style)
+        self.style_selector.currentTextChanged.connect(self._on_style_selected)
+        top_row.addWidget(self.style_selector, 1)
+        
+        add_btn = QPushButton("➕ إضافة أسلوب جديد")
+        add_btn.clicked.connect(self._add_new_style)
+        top_row.addWidget(add_btn)
+        layout.addLayout(top_row)
+        
+        lbl_info = QLabel("قم بتعديل وتخصيص التوجيه السلوكي (System Prompt) الذي سيتم إرساله لمحرك Google Gemini لتوجيه طريقة قراءة ونبرة هذا الأسلوب بشكل مستقل:")
+        lbl_info.setWordWrap(True)
+        lbl_info.setStyleSheet("color: #89b4fa; font-size: 14px; font-weight: bold;")
+        layout.addWidget(lbl_info)
+        
+        self.prompt_edit = QPlainTextEdit()
+        self.prompt_edit.setPlainText(self.custom_prompts.get(current_style, READING_STYLES.get(current_style, "")))
+        self.prompt_edit.setFont(QFont("Tahoma", 14, QFont.Weight.Bold))
+        layout.addWidget(self.prompt_edit, 1)
+        
+        reset_btn = QPushButton("🔄 استعادة البرمت الافتراضي لهذا الأسلوب")
+        reset_btn.clicked.connect(self._reset_current)
+        layout.addWidget(reset_btn)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        button_box.button(QDialogButtonBox.StandardButton.Save).setText("💾 حفظ وتطبيق")
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("إلغاء")
+        button_box.accepted.connect(self._save_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _on_style_selected(self, style_name: str):
+        if style_name in self.custom_prompts:
+            self.prompt_edit.setPlainText(self.custom_prompts[style_name])
+
+    def _reset_current(self):
+        cur = self.style_selector.currentText()
+        if cur in READING_STYLES:
+            self.prompt_edit.setPlainText(READING_STYLES[cur])
+        else:
+            self.prompt_edit.setPlainText("أنت معلق صوتي محترف تقرأ هذا النص بوضوح ودقة وحرفية عالية باللغة العربية.")
+
+    def _add_new_style(self):
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "إضافة أسلوب جديد", "أدخل اسم الأسلوب الجديد (مثال: كتاب وثائقي / شعر / قصة أطفال):")
+        if ok and name.strip():
+            clean_name = name.strip()
+            if clean_name not in self.custom_prompts:
+                self.custom_prompts[clean_name] = "أنت معلق صوتي محترف، اقرأ هذا النص بوضوح وحرفية عالية بما يتناسب مع سياق المحتوى."
+                self.style_selector.addItem(clean_name)
+            self.style_selector.setCurrentText(clean_name)
+
+    def _save_and_accept(self):
+        cur = self.style_selector.currentText()
+        if cur:
+            self.custom_prompts[cur] = self.prompt_edit.toPlainText().strip()
+        self.accept()
+
 class TextPreviewDialog(QDialog):
     """Displays exact source text preview."""
 
@@ -2669,7 +2750,7 @@ def estimate_duration_seconds(char_count: int) -> float:
 # ═══════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
-    """Main application window for Gemini TTS Pro v1.7 Studio."""
+    """Main application window for Gemini TTS Pro v1.8 Studio."""
 
     def __init__(self):
         super().__init__()
@@ -2711,6 +2792,8 @@ class MainWindow(QMainWindow):
                 for k, v in data.items():
                     if hasattr(self._config, k):
                         setattr(self._config, k, v)
+                if not hasattr(self._config, "custom_reading_styles") or not self._config.custom_reading_styles:
+                    self._config.custom_reading_styles = READING_STYLES.copy()
             except Exception:
                 pass
 
@@ -2731,6 +2814,8 @@ class MainWindow(QMainWindow):
             self._config.project_name = self.project_name_input.text().strip()
             self._config.auto_merge = self.auto_merge_check.isChecked()
             self._config.reading_style = self.reading_style_combo.currentText()
+            if not hasattr(self._config, "custom_reading_styles") or not self._config.custom_reading_styles:
+                self._config.custom_reading_styles = READING_STYLES.copy()
 
             s_idx = self.split_method_combo.currentIndex()
             if s_idx == 1: self._config.split_method = "words"
@@ -2862,11 +2947,22 @@ class MainWindow(QMainWindow):
         self.lang_input = QLineEdit(self._config.lang_hint)
         tts_layout.addRow(UI["lang_hint"], self.lang_input)
 
+        style_row = QHBoxLayout()
         self.reading_style_combo = QComboBox()
-        self.reading_style_combo.addItems(list(READING_STYLES.keys()))
-        if self._config.reading_style in READING_STYLES:
+        styles_list = list(self._config.custom_reading_styles.keys()) if hasattr(self._config, "custom_reading_styles") and self._config.custom_reading_styles else list(READING_STYLES.keys())
+        self.reading_style_combo.addItems(styles_list)
+        if self._config.reading_style in styles_list:
             self.reading_style_combo.setCurrentText(self._config.reading_style)
-        tts_layout.addRow("أسلوب القراءة:", self.reading_style_combo)
+        style_row.addWidget(self.reading_style_combo, 1)
+        
+        self.edit_style_prompt_btn = QPushButton("✏️ تخصيص البرمت")
+        self.edit_style_prompt_btn.setObjectName("btn_edit_style")
+        self.edit_style_prompt_btn.clicked.connect(self._open_style_prompt_editor)
+        self.edit_style_prompt_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.edit_style_prompt_btn.setMinimumHeight(32)
+        self.edit_style_prompt_btn.setMaximumHeight(34)
+        style_row.addWidget(self.edit_style_prompt_btn)
+        tts_layout.addRow("أسلوب القراءة:", style_row)
         tab1_layout.addWidget(tts_group)
 
         # 3. API Keys & Quota Group (أعلى تبويب التقسيم)
@@ -3075,6 +3171,22 @@ class MainWindow(QMainWindow):
         tab2_layout.addStretch()
         tab2_scroll.setWidget(tab2_widget)
         self.left_tabs.addTab(tab2_scroll, "📁 المخرجات والنماذج والترميز")
+        
+        # ربط جميع عناصر التحكم في الواجهة بدالة الحفظ التلقائي الفوري لمسار الإعدادات عند أي تغيير
+        self.voice_combo.currentIndexChanged.connect(lambda: self._save_config())
+        self.reading_style_combo.currentIndexChanged.connect(lambda: self._save_config())
+        self.speed_slider.valueChanged.connect(lambda: self._save_config())
+        self.lang_input.textChanged.connect(lambda: self._save_config())
+        self.split_method_combo.currentIndexChanged.connect(lambda: self._save_config())
+        self.chunk_spin.valueChanged.connect(lambda: self._save_config())
+        self.chunk_words_spin.valueChanged.connect(lambda: self._save_config())
+        self.chunk_sentences_spin.valueChanged.connect(lambda: self._save_config())
+        self.context_check.toggled.connect(lambda: self._save_config())
+        self.output_path_input.textChanged.connect(lambda: self._save_config())
+        self.project_name_input.textChanged.connect(lambda: self._save_config())
+        self.auto_merge_check.toggled.connect(lambda: self._save_config())
+        self.bitrate_combo.currentIndexChanged.connect(lambda: self._save_config())
+        self.model_combo.currentIndexChanged.connect(lambda: self._save_config())
 
         # ── RIGHT PANEL (لوحة التشغيل والمتابعة الحية) ──
         right_widget = QWidget()
@@ -3215,7 +3327,7 @@ class MainWindow(QMainWindow):
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumHeight(170)
-        self.log_edit.setFont(QFont("Consolas", 10))
+        self.log_edit.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
         right_layout.addWidget(self.log_edit)
 
         # ── إدراج أزرار التحكم العلوية سابقاً في أسفل الشاشة تحت السجل مباشرة بناءً على التوجيه الجديد ──
@@ -3301,7 +3413,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(settings_action)
 
         help_menu = menubar.addMenu("مساعدة")
-        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.7)", self)
+        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.8)", self)
         welcome_action.triggered.connect(lambda: WelcomeSplashScreen(self, is_standalone=True).exec())
         help_menu.addAction(welcome_action)
         help_menu.addSeparator()
@@ -3839,6 +3951,20 @@ class MainWindow(QMainWindow):
         if self._chunks:
             ChunkPreviewDialog(self._chunks, self).exec()
 
+    def _open_style_prompt_editor(self):
+        cur_style = self.reading_style_combo.currentText()
+        if not hasattr(self._config, "custom_reading_styles") or not self._config.custom_reading_styles:
+            self._config.custom_reading_styles = READING_STYLES.copy()
+        dlg = StylePromptEditorDialog(cur_style, self._config.custom_reading_styles, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._config.custom_reading_styles = dlg.custom_prompts
+            self.reading_style_combo.clear()
+            self.reading_style_combo.addItems(list(self._config.custom_reading_styles.keys()))
+            if dlg.style_selector.currentText() in self._config.custom_reading_styles:
+                self.reading_style_combo.setCurrentText(dlg.style_selector.currentText())
+            self._save_config()
+            self._log(f"💾 تم تخصيص وحفظ برمت موجه النموذج للأسلوب ({dlg.style_selector.currentText()}) بنجاح.", "#a6e3a1")
+
     def _preview_voice(self) -> None:
         voice = self._get_current_voice()
         style_name = self.reading_style_combo.currentText()
@@ -3864,7 +3990,8 @@ class MainWindow(QMainWindow):
         self.preview_voice_btn.setEnabled(False)
         self.preview_voice_btn.setText("جاري التوليد...")
         model_id = self._get_current_model_id()
-        style_instruction = READING_STYLES.get(style_name, READING_STYLES["رواية (افتراضي)"])
+        custom_dict = getattr(self._config, "custom_reading_styles", {}) if hasattr(self, "_config") and getattr(self._config, "custom_reading_styles", {}) else READING_STYLES
+        style_instruction = custom_dict.get(style_name, READING_STYLES.get(style_name, READING_STYLES["رواية (افتراضي)"]))
 
         def _do():
             try:
@@ -3992,7 +4119,8 @@ class MainWindow(QMainWindow):
             reading_style=self.reading_style_combo.currentText(),
             global_key_mgr=self._global_key_mgr,
             adaptive_parallel=self._config.adaptive_parallel,
-            retry_failed_forever=self._config.retry_failed_forever
+            retry_failed_forever=self._config.retry_failed_forever,
+            custom_reading_styles=getattr(self._config, 'custom_reading_styles', {})
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.status.connect(self._on_status)
@@ -4248,7 +4376,7 @@ class MainWindow(QMainWindow):
                                      reading_style=self.reading_style_combo.currentText(),
                                      global_key_mgr=self._global_key_mgr,
                                      adaptive_parallel=self._config.adaptive_parallel,
-                                     retry_failed_forever=self._config.retry_failed_forever)
+                                     retry_failed_forever=self._config.retry_failed_forever, custom_reading_styles=getattr(self._config, 'custom_reading_styles', {}))
             idx, success, res = worker._process_single_chunk(chunk)
             return idx, success, res
 
@@ -4484,7 +4612,7 @@ class MainWindow(QMainWindow):
             formatted_msg = clean_msg
         
         # استخدام append يضمن إنشاء فقرة/سطر جديد ومستقل تماماً لكل إجراء في السجل دون أي تداخل
-        self.log_edit.append(f'<div style="color: {color}; font-weight: bold; font-size: 13px; margin-top: 4px; margin-bottom: 4px;">{formatted_msg}</div>')
+        self.log_edit.append(f'<div style="color: {color}; font-weight: bold; font-size: 15px; font-weight: bold; margin-top: 5px; margin-bottom: 5px;">{formatted_msg}</div>')
         self.log_edit.ensureCursorVisible()
 
     def _export_log(self) -> None:
@@ -4556,7 +4684,7 @@ class MainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
-# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.7
+# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.8
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeSplashScreen(QDialog):
@@ -4590,7 +4718,7 @@ class WelcomeSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("Gemini TTS Pro Studio")
         title_lbl.setStyleSheet("font-size: 28px; font-weight: 900; color: #f9e2af; letter-spacing: 1px;")
-        sub_lbl = QLabel("الإصدار الشامل v1.7 — استوديو تحويل النصوص إلى كلام")
+        sub_lbl = QLabel("الإصدار الشامل v1.8 — استوديو تحويل النصوص إلى كلام")
         sub_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #89b4fa;")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -4604,7 +4732,7 @@ class WelcomeSplashScreen(QDialog):
         feat_layout = QVBoxLayout(feat_frame)
         feat_layout.setSpacing(8)
         
-        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.7):")
+        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.8):")
         feat_hdr.setStyleSheet("font-weight: bold; color: #a6e3a1; font-size: 13px;")
         feat_layout.addWidget(feat_hdr)
         
