@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-🌟 Gemini TTS Pro v1.6 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
+🌟 Gemini TTS Pro v1.7 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
 ================================================================================
 تطبيق استوديو متكامل وتحكم فائق لتوليد الكلام العربي والدولي بدقة عالية
 باستخدام Google Gemini TTS API.
 
-✨ الميزات الحصرية المدمجة في الإصدار v1.6:
+✨ الميزات الحصرية المدمجة في الإصدار v1.7:
 - معالجة تلقائية وحل جذري لأخطاء 400 Developer Instruction لجميع النماذج المخصصة للصوت.
 - إدارة استباقية للمفاتيح والكوتة (Adaptive RPM Pacing + Round-Robin Rotation).
 - طرق تقسيم نص متعددة مدمجة: بالمدة الزمنية (الثواني)، بعد الكلمات، أو بعد الجمل.
@@ -87,7 +87,7 @@ from PyQt6.QtGui import (
 # ═══════════════════════════════════════════════════════════════
 
 APP_NAME = "Gemini TTS Pro"
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".gemini_tts_pro"
@@ -289,14 +289,14 @@ class BookJob:
 
 @dataclass
 class ProjectConfig:
-    """Stores project-level configuration integrated from v1.6."""
+    """Stores project-level configuration integrated from v1.7."""
     source_file: str = ""
     model_id: str = "gemini-2.5-flash-preview-tts"
     voice: str = "Kore"
     speed: float = 1.0
     lang_hint: str = "ar"
     
-    # Chunking configuration (integrated from v1.6)
+    # Chunking configuration (integrated from v1.7)
     split_method: str = "seconds"       # 'seconds', 'words', 'sentences'
     chunk_duration: int = 60            # seconds target
     chunk_words: int = 150              # words target
@@ -2014,52 +2014,56 @@ def split_wav_file(input_wav: str, method: str, parts: int = 5,
                    duration_min: int = 60, size_mb: int = 50,
                    overlap_sec: int = 10, target_dir: str = "") -> List[str]:
     """Splits master WAV file into parts with seamless cross-overlap inside project subfolder."""
-    if not os.path.exists(input_wav) or method == "none":
+    if not os.path.exists(input_wav) or method == "none" or os.path.getsize(input_wav) < 44:
         return [input_wav] if os.path.exists(input_wav) else []
         
     part_files = []
-    with wave.open(input_wav, "rb") as win:
-        params = win.getparams()
-        total_frames = params.nframes
-        framerate = params.framerate
-        nchannels = params.nchannels
-        sampwidth = params.sampwidth
-        
-        frames_per_part = total_frames
-        if method == "parts" and parts > 0:
-            frames_per_part = max(100, (total_frames + parts - 1) // parts)
-        elif method == "duration" and duration_min > 0:
-            frames_per_part = max(100, int(framerate * duration_min * 60))
-        elif method == "size" and size_mb > 0:
-            bytes_per_frame = max(1, nchannels * sampwidth)
-            frames_per_part = max(100, int(size_mb * 1024 * 1024 / bytes_per_frame))
+    try:
+        with wave.open(input_wav, "rb") as win:
+            params = win.getparams()
+            total_frames = params.nframes
+            framerate = params.framerate
+            nchannels = params.nchannels
+            sampwidth = params.sampwidth
             
-        overlap_frames = int(framerate * max(0, overlap_sec))
-        part_idx = 0
-        current_start = 0
-        
-        base_dir = target_dir if target_dir else os.path.dirname(input_wav)
-        os.makedirs(base_dir, exist_ok=True)
-        base_name = os.path.splitext(os.path.basename(input_wav))[0]
-        
-        while current_start < total_frames:
-            part_idx += 1
-            current_end = min(total_frames, current_start + frames_per_part)
-            read_start = max(0, current_start - (overlap_frames if part_idx > 1 else 0))
-            read_end = current_end
+            frames_per_part = total_frames
+            if method == "parts" and parts > 0:
+                frames_per_part = max(100, (total_frames + parts - 1) // parts)
+            elif method == "duration" and duration_min > 0:
+                frames_per_part = max(100, int(framerate * duration_min * 60))
+            elif method == "size" and size_mb > 0:
+                bytes_per_frame = max(1, nchannels * sampwidth)
+                frames_per_part = max(100, int(size_mb * 1024 * 1024 / bytes_per_frame))
+                
+            overlap_frames = int(framerate * max(0, overlap_sec))
+            part_idx = 0
+            current_start = 0
             
-            win.setpos(read_start)
-            frames_data = win.readframes(read_end - read_start)
+            base_dir = target_dir if target_dir else os.path.dirname(input_wav)
+            os.makedirs(base_dir, exist_ok=True)
+            base_name = os.path.splitext(os.path.basename(input_wav))[0]
             
-            out_path = os.path.join(base_dir, f"{base_name}_part_{part_idx:02d}.wav")
-            with wave.open(out_path, "wb") as wout:
-                wout.setparams(params)
-                wout.writeframes(frames_data)
-            part_files.append(out_path)
-            
-            if current_end >= total_frames:
-                break
-            current_start = current_end
+            while current_start < total_frames:
+                part_idx += 1
+                current_end = min(total_frames, current_start + frames_per_part)
+                read_start = max(0, current_start - (overlap_frames if part_idx > 1 else 0))
+                read_end = current_end
+                
+                win.setpos(read_start)
+                frames_data = win.readframes(read_end - read_start)
+                
+                out_path = os.path.join(base_dir, f"{base_name}_part_{part_idx:02d}.wav")
+                with wave.open(out_path, "wb") as wout:
+                    wout.setparams(params)
+                    wout.writeframes(frames_data)
+                part_files.append(out_path)
+                
+                if current_end >= total_frames:
+                    break
+                current_start = current_end
+    except Exception as e:
+        print(f"Error during WAV splitting on {input_wav}: {e}")
+        return [input_wav] if os.path.exists(input_wav) else []
             
     return part_files
 
@@ -2097,22 +2101,35 @@ class MergeWorker(QThread):
         
         first_params = None
         total_files = len(self._wav_files)
+        valid_merged_count = 0
         
         with wave.open(self._output_path, "wb") as wout:
             for idx, fname in enumerate(self._wav_files):
                 self.progress.emit(f"🔀 دمج المقطع {idx + 1}/{total_files}...")
-                with wave.open(fname, "rb") as win:
-                    params = win.getparams()
-                    if first_params is None:
-                        first_params = params
-                        wout.setparams(first_params)
-                    else:
-                        if self._silence_pad_ms > 0:
-                            silence_frames = int(first_params.framerate * self._silence_pad_ms / 1000.0)
-                            if silence_frames > 0:
-                                silence_bytes = b'\x00' * (silence_frames * first_params.sampwidth * first_params.nchannels)
-                                wout.writeframes(silence_bytes)
-                    wout.writeframes(win.readframes(win.getnframes()))
+                if not os.path.exists(fname) or os.path.getsize(fname) < 44:
+                    continue
+                try:
+                    with wave.open(fname, "rb") as win:
+                        params = win.getparams()
+                        if win.getnframes() <= 0:
+                            continue
+                        if first_params is None:
+                            first_params = params
+                            wout.setparams(first_params)
+                        else:
+                            if self._silence_pad_ms > 0:
+                                silence_frames = int(first_params.framerate * self._silence_pad_ms / 1000.0)
+                                if silence_frames > 0:
+                                    silence_bytes = b'\x00' * (silence_frames * first_params.sampwidth * first_params.nchannels)
+                                    wout.writeframes(silence_bytes)
+                        wout.writeframes(win.readframes(win.getnframes()))
+                        valid_merged_count += 1
+                except Exception as e:
+                    print(f"Skipping corrupt or non-RIFF chunk during merge {fname}: {e}")
+                    continue
+
+        if valid_merged_count == 0:
+            raise RuntimeError("جميع المقاطع الصوتية المتاحة فارغة أو تالفة (لا تبدأ بترويسة RIFF صالحة) ولم يتم دمج أي بيانات صوتية.")
 
     def run(self) -> None:
         if not self._wav_files:
@@ -2652,7 +2669,7 @@ def estimate_duration_seconds(char_count: int) -> float:
 # ═══════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
-    """Main application window for Gemini TTS Pro v1.6 Studio."""
+    """Main application window for Gemini TTS Pro v1.7 Studio."""
 
     def __init__(self):
         super().__init__()
@@ -3284,7 +3301,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(settings_action)
 
         help_menu = menubar.addMenu("مساعدة")
-        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.6)", self)
+        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.7)", self)
         welcome_action.triggered.connect(lambda: WelcomeSplashScreen(self, is_standalone=True).exec())
         help_menu.addAction(welcome_action)
         help_menu.addSeparator()
@@ -4365,14 +4382,23 @@ class MainWindow(QMainWindow):
         out_dir = os.path.join(self.output_path_input.text().strip(), self.project_name_input.text().strip())
         files = []
         for c in self._chunks:
-            if c.status == "done" and c.output_file and os.path.exists(c.output_file):
-                files.append(c.output_file)
-            else:
-                p = os.path.join(out_dir, f"{self.project_name_input.text().strip()}_chunk_{c.index:04d}.wav")
-                if os.path.exists(p):
-                    c.status = "done"
-                    c.output_file = p
-                    files.append(p)
+            candidates = []
+            if c.output_file and os.path.exists(c.output_file) and os.path.getsize(c.output_file) >= 44:
+                candidates.append(c.output_file)
+            p = os.path.join(out_dir, f"{self.project_name_input.text().strip()}_chunk_{c.index:04d}.wav")
+            if os.path.exists(p) and os.path.getsize(p) >= 44 and p not in candidates:
+                candidates.append(p)
+            for fpath in candidates:
+                try:
+                    with open(fpath, "rb") as header_test:
+                        header = header_test.read(12)
+                        if header.startswith(b"RIFF") and b"WAVE" in header:
+                            c.status = "done"
+                            c.output_file = fpath
+                            files.append(fpath)
+                            break
+                except Exception:
+                    pass
         return files
 
     def _merge_available(self) -> None:
@@ -4530,7 +4556,7 @@ class MainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
-# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.6
+# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.7
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeSplashScreen(QDialog):
@@ -4564,7 +4590,7 @@ class WelcomeSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("Gemini TTS Pro Studio")
         title_lbl.setStyleSheet("font-size: 28px; font-weight: 900; color: #f9e2af; letter-spacing: 1px;")
-        sub_lbl = QLabel("الإصدار الشامل v1.6 — استوديو تحويل النصوص إلى كلام")
+        sub_lbl = QLabel("الإصدار الشامل v1.7 — استوديو تحويل النصوص إلى كلام")
         sub_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #89b4fa;")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -4578,7 +4604,7 @@ class WelcomeSplashScreen(QDialog):
         feat_layout = QVBoxLayout(feat_frame)
         feat_layout.setSpacing(8)
         
-        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.6):")
+        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.7):")
         feat_hdr.setStyleSheet("font-weight: bold; color: #a6e3a1; font-size: 13px;")
         feat_layout.addWidget(feat_hdr)
         
