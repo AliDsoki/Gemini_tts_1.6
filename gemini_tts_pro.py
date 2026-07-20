@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-🌟 Gemini TTS Pro v1.10 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
+🌟 Gemini TTS Pro v1.11 — محوّل النصوص إلى كلام (استوديو إنتاج احترافي متكامل)
 ================================================================================
 تطبيق استوديو متكامل وتحكم فائق لتوليد الكلام العربي والدولي بدقة عالية
 باستخدام Google Gemini TTS API.
 
-✨ الميزات الحصرية المدمجة في الإصدار v1.10:
+✨ الميزات الحصرية المدمجة في الإصدار v1.11:
 - معالجة تلقائية وحل جذري لأخطاء 400 Developer Instruction لجميع النماذج المخصصة للصوت.
 - إدارة استباقية للمفاتيح والكوتة (Adaptive RPM Pacing + Round-Robin Rotation).
 - طرق تقسيم نص متعددة مدمجة: بالمدة الزمنية (الثواني)، بعد الكلمات، أو بعد الجمل.
@@ -87,7 +87,7 @@ from PyQt6.QtGui import (
 # ═══════════════════════════════════════════════════════════════
 
 APP_NAME = "Gemini TTS Pro"
-APP_VERSION = "1.10"
+APP_VERSION = "1.11"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".gemini_tts_pro"
@@ -290,7 +290,7 @@ class BookJob:
 
 @dataclass
 class ProjectConfig:
-    """Stores project-level configuration integrated from v1.10."""
+    """Stores project-level configuration integrated from v1.11."""
     source_file: str = ""
     model_id: str = "gemini-2.5-flash-preview-tts"
     voice: str = "Kore"
@@ -298,7 +298,7 @@ class ProjectConfig:
     lang_hint: str = "ar"
     custom_reading_styles: dict = field(default_factory=dict)
     
-    # Chunking configuration (integrated from v1.10)
+    # Chunking configuration (integrated from v1.11)
     split_method: str = "seconds"       # 'seconds', 'words', 'sentences'
     chunk_duration: int = 60            # seconds target
     chunk_words: int = 150              # words target
@@ -306,6 +306,9 @@ class ProjectConfig:
     context_carry: bool = True
     context_carry_words: int = 200
     paragraph_overrun_limit: int = 20
+    splitter_sizes: list = field(default_factory=lambda: [460, 840])
+    left_tab_index: int = 0
+    right_view_index: int = 1
     auto_clean_symbols: bool = True     # clean URLs/symbols automatically
     remove_diacritics: bool = False     # strip tashkeel if preferred
     
@@ -2827,7 +2830,7 @@ def estimate_duration_seconds(char_count: int) -> float:
 # ═══════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
-    """Main application window for Gemini TTS Pro v1.10 Studio."""
+    """Main application window for Gemini TTS Pro v1.11 Studio."""
 
     def __init__(self):
         super().__init__()
@@ -2875,6 +2878,12 @@ class MainWindow(QMainWindow):
                     self._config.context_carry_words = 200
                 if not hasattr(self._config, "paragraph_overrun_limit"):
                     self._config.paragraph_overrun_limit = 20
+                if not hasattr(self._config, "splitter_sizes") or not isinstance(self._config.splitter_sizes, list):
+                    self._config.splitter_sizes = [460, 840]
+                if not hasattr(self._config, "left_tab_index"):
+                    self._config.left_tab_index = 0
+                if not hasattr(self._config, "right_view_index"):
+                    self._config.right_view_index = 1
             except Exception:
                 pass
 
@@ -2912,6 +2921,19 @@ class MainWindow(QMainWindow):
             elif b_idx == 3: self._config.audio_bitrate = "96k"
             elif b_idx == 4: self._config.audio_bitrate = "128k"
             else: self._config.audio_bitrate = "copy"
+            
+            if hasattr(self, "splitter") and self.splitter:
+                sizes = self.splitter.sizes()
+                if isinstance(sizes, list) and len(sizes) == 2 and sum(sizes) > 100:
+                    self._config.splitter_sizes = sizes
+            if hasattr(self, "left_tabs") and self.left_tabs:
+                self._config.left_tab_index = self.left_tabs.currentIndex()
+            if hasattr(self, "right_stack") and self.right_stack:
+                self._config.right_view_index = self.right_stack.currentIndex()
+            if hasattr(self, "context_words_spin"):
+                self._config.context_carry_words = self.context_words_spin.value()
+            if hasattr(self, "overrun_spin"):
+                self._config.paragraph_overrun_limit = self.overrun_spin.value()
 
             atomic_write_text(CONFIG_FILE, json.dumps(asdict(self._config), ensure_ascii=False, indent=2))
         except Exception:
@@ -2945,6 +2967,7 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(10, 10, 10, 10)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = splitter
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(10)  # جعل الخط المنزلق عريضاً وسلساً للمسك والفرد بالسحب لتغيير حجم الشاشتين معاً
         main_layout.addWidget(splitter)
@@ -3295,6 +3318,10 @@ class MainWindow(QMainWindow):
         self.auto_merge_check.toggled.connect(lambda: self._save_config())
         self.bitrate_combo.currentIndexChanged.connect(lambda: self._save_config())
         self.model_combo.currentIndexChanged.connect(lambda: self._save_config())
+        if hasattr(self, "splitter") and self.splitter:
+            self.splitter.splitterMoved.connect(lambda: self._save_config())
+        if hasattr(self, "left_tabs") and self.left_tabs:
+            self.left_tabs.currentChanged.connect(lambda: self._save_config())
 
         # ── RIGHT PANEL (لوحة التشغيل والمتابعة الحية) ──
         right_widget = QWidget()
@@ -3418,9 +3445,13 @@ class MainWindow(QMainWindow):
         self.right_stack.addWidget(grid_container)
 
         right_layout.addWidget(self.right_stack)
-        # جعل الافتراضي هو المربعات في عرض الأجزاء وبدء الواجهة عليها فوراً كما طلب المستخدم
-        self.right_stack.setCurrentIndex(1)
-        self.toggle_view_btn.setText("📋 عرض جدول المقاطع التفصيلي")
+        # استعادة وضع العرض المختار سابقاً (أو المربعات كافتراضي) وبدء الواجهة عليه فوراً
+        saved_view = getattr(self._config, 'right_view_index', 1)
+        if 0 <= saved_view < self.right_stack.count():
+            self.right_stack.setCurrentIndex(saved_view)
+        else:
+            self.right_stack.setCurrentIndex(1)
+        self.toggle_view_btn.setText("📋 عرض جدول المقاطع التفصيلي" if self.right_stack.currentIndex() == 1 else "📡 تبديل العرض (شبكة / جدول)")
 
         # Log
         log_header = QHBoxLayout()
@@ -3463,7 +3494,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setMinimumHeight(50)
         self.start_btn.setMaximumHeight(52)
 
-        # Splitter sizes & elasticity
+        # Splitter sizes & elasticity & restoring user's saved tab/splitter choices
         self.left_tabs.setMinimumWidth(280)
         right_widget.setMinimumWidth(320)
         self.left_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -3473,7 +3504,16 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([460, 840])
+        
+        saved_sizes = getattr(self._config, 'splitter_sizes', [460, 840])
+        if isinstance(saved_sizes, list) and len(saved_sizes) == 2 and sum(saved_sizes) > 100:
+            splitter.setSizes(saved_sizes)
+        else:
+            splitter.setSizes([460, 840])
+            
+        saved_tab = getattr(self._config, 'left_tab_index', 0)
+        if 0 <= saved_tab < self.left_tabs.count():
+            self.left_tabs.setCurrentIndex(saved_tab)
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -3521,7 +3561,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(settings_action)
 
         help_menu = menubar.addMenu("مساعدة")
-        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.10)", self)
+        welcome_action = QAction("🌟 شاشة الترحيب والميزات (v1.11)", self)
         welcome_action.triggered.connect(lambda: WelcomeSplashScreen(self, is_standalone=True).exec())
         help_menu.addAction(welcome_action)
         help_menu.addSeparator()
@@ -3606,10 +3646,11 @@ class MainWindow(QMainWindow):
         for idx, (vid, desc) in enumerate(VOICE_CATALOG):
             self.voice_combo.addItem(f"{idx+1}. {vid} ({desc})", vid)
 
-        saved_v = self._config.voice
+        saved_v = str(self._config.voice).strip().lower() if self._config.voice else "kore"
         found = False
         for i in range(self.voice_combo.count()):
-            if self.voice_combo.itemData(i) == saved_v:
+            data_str = str(self.voice_combo.itemData(i)).strip().lower()
+            if data_str == saved_v:
                 self.voice_combo.setCurrentIndex(i)
                 found = True
                 break
@@ -4371,6 +4412,8 @@ class MainWindow(QMainWindow):
         next_idx = 1 if cur == 0 else 0
         self.right_stack.setCurrentIndex(next_idx)
         self.toggle_view_btn.setText("📋 عرض جدول المقاطع التفصيلي" if next_idx == 1 else "📡 تبديل العرض (شبكة / جدول)")
+        self._config.right_view_index = next_idx
+        self._save_config()
         if next_idx == 1 and hasattr(self, "parts_grid"):
             self.parts_grid._rects, _, _ = self.parts_grid._layout()
             self.parts_grid.update()
@@ -4796,7 +4839,7 @@ class MainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
-# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.10
+# WELCOME / SPLASH SCREEN — شاشة الترحيب الراقية v1.11
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeSplashScreen(QDialog):
@@ -4830,7 +4873,7 @@ class WelcomeSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("Gemini TTS Pro Studio")
         title_lbl.setStyleSheet("font-size: 28px; font-weight: 900; color: #f9e2af; letter-spacing: 1px;")
-        sub_lbl = QLabel("الإصدار الشامل v1.10 — استوديو تحويل النصوص إلى كلام")
+        sub_lbl = QLabel("الإصدار الشامل v1.11 — استوديو تحويل النصوص إلى كلام")
         sub_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #89b4fa;")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -4844,7 +4887,7 @@ class WelcomeSplashScreen(QDialog):
         feat_layout = QVBoxLayout(feat_frame)
         feat_layout.setSpacing(8)
         
-        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.10):")
+        feat_hdr = QLabel("✨ أبرز القدرات الحصرية في هذا الإصدار الملكي (v1.11):")
         feat_hdr.setStyleSheet("font-weight: bold; color: #a6e3a1; font-size: 13px;")
         feat_layout.addWidget(feat_hdr)
         
